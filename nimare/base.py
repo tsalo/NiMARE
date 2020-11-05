@@ -21,6 +21,20 @@ LGR = logging.getLogger(__name__)
 class NiMAREBase(metaclass=ABCMeta):
     """
     Base class for NiMARE.
+
+    Methods
+    -------
+    _check_ncores(n_cores)
+    _get_param_names
+        Get names of the parameters set during initialization.
+    get_params(deep)
+        Get parameters set during initialization.
+    set_params(**params)
+        Override parameters originally set during initialization.
+    save(filename, compress=True)
+        Save model to a pkl file.
+    load(filename, compressed=True)
+        Load model from a pkl file.
     """
 
     def __init__(self):
@@ -199,7 +213,26 @@ class NiMAREBase(metaclass=ABCMeta):
 
 
 class Estimator(NiMAREBase):
-    """Estimators take in Datasets and return MetaResults"""
+    """Estimators take in Datasets and return MetaResults.
+
+    Methods
+    -------
+    _validate_input(dataset)
+        Check that the input dataset is a valid Dataset and collect required
+        inputs for the Estimator from the Dataset.
+    _preprocess_input(dataset)
+        This method stands in for the _preprocess_input() method used by
+        inherited classes.
+        This method does nothing, but the inherited classes' versions perform
+        additional processing on inputs from the dataset to prepare them for
+        the Estimator's fit method.
+    fit(dataset)
+        Run input validation and preprocessing, then call _fit() for the actual
+        estimation.
+    _fit(dataset)
+        Abstract method for the required _fit() method.
+        All classes inheriting from Estimator must have a valid _fit() method.
+    """
 
     # Inputs that must be available in input Dataset. Keys are names of
     # attributes to set; values are strings indicating location in Dataset.
@@ -276,7 +309,14 @@ class Estimator(NiMAREBase):
 
 
 class MetaEstimator(Estimator):
-    """Base class for meta-analysis methods in :mod:`nimare.meta`."""
+    """Base class for meta-analysis methods in :mod:`nimare.meta`.
+
+    Methods
+    -------
+    _preprocess_input(dataset)
+        Manipulate inputs to the Estimator from the Dataset as needed.
+        This method overrides Estimator._preprocess_input().
+    """
 
     def __init__(self, *args, **kwargs):
         mask = kwargs.get("mask")
@@ -319,6 +359,13 @@ class CBMAEstimator(MetaEstimator):
     **kwargs
         Optional keyword arguments to the :obj:`nimare.base.MetaEstimator`
         __init__ (called automatically).
+
+    Methods
+    -------
+    _preprocess_input(dataset)
+        Collect necessary metadata (e.g., "sample size").
+        This method calls MetaEstimator._preprocess_input() *before* any
+        special steps.
     """
 
     def __init__(self, kernel_transformer, *args, **kwargs):
@@ -401,6 +448,14 @@ class PairwiseCBMAEstimator(CBMAEstimator):
     **kwargs
         Optional keyword arguments to the :obj:`nimare.base.MetaEstimator`
         __init__ (called automatically).
+
+    Methods
+    -------
+    fit(dataset1, dataset2)
+        Fit the Estimator to two datasets.
+        This method overrides Estimator.fit(), which only accepts one dataset.
+        This method validates both datasets, preprocesses inputs from both
+        datasets, and runs the _fit() method.
     """
 
     def fit(self, dataset1, dataset2):
@@ -447,6 +502,14 @@ class Transformer(NiMAREBase):
     """Transformers take in Datasets and return Datasets
 
     Initialize with hyperparameters.
+
+    Methods
+    -------
+    transform(dataset)
+        An abstract method for the transformer's core transform method.
+        All classes inheriting from Transformer must have valid tranform()
+        methods.
+        This method also checks that the input (dataset) is a valid Dataset.
     """
 
     def __init__(self):
@@ -463,7 +526,19 @@ class Transformer(NiMAREBase):
 
 
 class Decoder(NiMAREBase):
-    """Base class for decoders in :mod:`nimare.decode`."""
+    """Base class for decoders in :mod:`nimare.decode`.
+
+    Methods
+    -------
+    _preprocess_input(dataset)
+        Identify available/requested features based on Decoder attributes
+        "features" and "feature_group".
+    fit(dataset)
+        User-facing method that calls _preprocess_input and _fit.
+    _fit(dataset)
+        Abstract method for the required _fit() method.
+        All classes inheriting from Decoder must have a valid _fit() method.
+    """
 
     __id_cols = ["id", "study_id", "contrast_id"]
 
