@@ -4,7 +4,6 @@ import logging
 import multiprocessing as mp
 
 import numpy as np
-import pandas as pd
 from tqdm.auto import tqdm
 
 from ... import references
@@ -124,7 +123,7 @@ class ALE(CBMAEstimator):
         max_ma_values = np.max(ma_values, axis=1)
         # round up based on resolution
         max_ma_values = np.ceil(max_ma_values * inv_step_size) / inv_step_size
-        max_poss_ale = self.compute_summarystat(max_ma_values)
+        max_poss_ale = self._compute_summarystat(max_ma_values)
         # create bin centers, then shift them into bin edges
         hist_bins = np.round(np.arange(0, max_poss_ale + (1.5 * step_size), step_size), 5) - (
             step_size / 2
@@ -345,57 +344,71 @@ class SCALE(CBMAEstimator):
         self.n_iters = n_iters
         self.n_cores = self._check_ncores(n_cores)
         self.low_memory = low_memory
+        self.null_method = "empirical"
 
-    def _fit(self, dataset):
-        """Perform specific coactivation likelihood estimation meta-analysis on dataset.
+    def _compute_null_empirical(self, ma_maps, n_iters):
+        """Compute uncorrected SCALE null distribution using empirical solution.
 
         Parameters
         ----------
-        dataset : :obj:`nimare.dataset.Dataset`
-            Dataset to analyze.
-        """
-        self.dataset = dataset
-        self.masker = self.masker or dataset.masker
-        self.null_distributions_ = {}
+        ma_maps : list of imgs or numpy.ndarray
+            MA maps.
 
-        ma_maps = self.kernel_transformer.transform(
-            self.inputs_["coordinates"], masker=self.masker, return_type="array"
-        )
+        Notes
+        -----
+        This method adds two entries to the null_distributions_ dict attribute:
+        "histogram_bins" and "histogram_weights".
+        """
+        if isinstance(ma_maps, list):
+            ma_values = self.masker.transform(ma_maps)
+        elif isinstance(ma_maps, np.ndarray):
+            ma_values = ma_maps.copy()
+        else:
+            raise ValueError('Unsupported data type "{}"'.format(type(ma_maps)))
 
         # Determine bins for null distribution histogram
-        max_ma_values = np.max(ma_maps, axis=1)
+        inv_step_size = 10000
+        step_size = 1 / inv_step_size
+        max_ma_values = np.max(ma_values, axis=1)
+        # round up based on resolution
+        max_ma_values = np.ceil(max_ma_values * inv_step_size) / inv_step_size
         max_poss_ale = self._compute_summarystat(max_ma_values)
-        self.null_distributions_["histogram_bins"] = np.round(
-            np.arange(0, max_poss_ale + 0.001, 0.0001), 4
+        # create bin centers, then shift them into bin edges
+        hist_bins = np.round(np.arange(0, max_poss_ale + (1.5 * step_size), step_size), 4) - (
+            step_size / 2
         )
+        self.null_distributions_["histogram_bins"] = hist_bins
 
-        stat_values = self._compute_summarystat(ma_maps)
+        stat_values = self._compute_summarystat(ma_values)
 
         iter_df = self.inputs_["coordinates"].copy()
-        rand_idx = np.random.choice(self.ijk.shape[0], size=(iter_df.shape[0], self.n_iters))
+        rand_idx = np.random.choice(self.ijk.shape[0], size=(iter_df.shape[0], n_iters))
         rand_ijk = self.ijk[rand_idx, :]
         iter_ijks = np.split(rand_ijk, rand_ijk.shape[1], axis=1)
 
         # Define parameters
-        iter_dfs = [iter_df] * self.n_iters
+        iter_dfs = [iter_df] * n_iters
         params = zip(iter_dfs, iter_ijks)
 
         if self.n_cores == 1:
             if self.low_memory:
                 from tempfile import mkdtemp
 
-                filename = os.path.join(mkdtemp(), "perm_scale_values.dat")
+                self.null_distributions_["filename"] = os.path.join(
+                    mkdtemp(),
+                    "perm_scale_values.dat"
+                )
                 perm_scale_values = np.memmap(
-                    filename,
+                    self.null_distributions_["filename"],
                     dtype=stat_values.dtype,
                     mode="w+",
-                    shape=(self.n_iters, stat_values.shape[0]),
+                    shape=(n_iters, stat_values.shape[0]),
                 )
             else:
                 perm_scale_values = np.zeros(
-                    (self.n_iters, stat_values.shape[0]), dtype=stat_values.dtype
+                    (n_iters, stat_values.shape[0]), dtype=stat_values.dtype
                 )
-            for i_iter, pp in enumerate(tqdm(params, total=self.n_iters)):
+            for i_iter, pp in enumerate(tqdm(params, total=n_iters)):
                 perm_scale_values[i_iter, :] = self._run_permutation(pp)
                 if self.low_memory:
                     # Write changes to disk
@@ -403,45 +416,24 @@ class SCALE(CBMAEstimator):
         else:
             with mp.Pool(self.n_cores) as p:
                 perm_scale_values = list(
-                    tqdm(p.imap(self._run_permutation, params), total=self.n_iters)
+                    tqdm(p.imap(self._run_permutation, params), total=n_iters)
                 )
             perm_scale_values = np.stack(perm_scale_values)
 
-        p_values, z_values = self._scale_to_p(stat_values, perm_scale_values)
-        if self.low_memory:
-            del perm_scale_values
-            os.remove(filename)
-        logp_values = -np.log10(p_values)
-        logp_values[np.isinf(logp_values)] = -np.log10(np.finfo(float).eps)
+        self.null_distributions_["empirical_null"] = perm_scale_values
 
-        # Write out unthresholded value images
-        images = {"stat": stat_values, "logp": logp_values, "z": z_values}
-        return images
-
-    def _compute_summarystat(self, data):
+    def _compute_summarystat(self, ma_values):
         """Generate ALE-value array and null distribution from list of contrasts.
 
         For ALEs on the original dataset, computes the null distribution.
         For permutation ALEs and all SCALEs, just computes ALE values.
         Returns masked array of ALE values and 1XnBins null distribution.
         """
-        if isinstance(data, pd.DataFrame):
-            ma_values = self.kernel_transformer.transform(
-                data, masker=self.masker, return_type="array"
-            )
-        elif isinstance(data, list):
-            ma_values = self.masker.transform(data)
-        elif isinstance(data, np.ndarray):
-            ma_values = data.copy()
-        else:
-            raise ValueError('Unsupported data type "{}"'.format(type(data)))
-
         stat_values = 1.0 - np.prod(1.0 - ma_values, axis=0)
         return stat_values
 
-    def _scale_to_p(self, stat_values, scale_values):
-        """
-        Compute p- and z-values.
+    def _summarystat_to_p(self, stat_values, null_method="empirical"):
+        """Compute p- and z-values from summary statistics (e.g., ALE scores).
 
         Parameters
         ----------
@@ -459,57 +451,44 @@ class SCALE(CBMAEstimator):
         -----
         This method also uses the "histogram_bins" element in the null_distributions_ attribute.
         """
-        step = 1 / np.mean(np.diff(self.null_distributions_["histogram_bins"]))
+        inv_step_size = round2(1 / np.diff(self.null_distributions_["histogram_bins"])[0])
 
-        scale_zeros = scale_values == 0
-        n_zeros = np.sum(scale_zeros, axis=0)
-        scale_values[scale_values == 0] = np.nan
-        scale_hists = np.zeros(
-            ((len(self.null_distributions_["histogram_bins"]),) + n_zeros.shape)
-        )
-        scale_hists[0, :] = n_zeros
-        scale_hists[1:, :] = np.apply_along_axis(self._make_hist, 0, scale_values)
+        def just_histogram(*args, **kwargs):
+            """Collect the first output (weights) from numpy histogram."""
+            return np.histogram(*args, **kwargs)[0].astype(float)
 
-        # Convert voxel-wise histograms to voxel-wise null distributions.
-        null_distribution = scale_hists / np.sum(scale_hists, axis=0)
-        null_distribution = np.cumsum(null_distribution[::-1, :], axis=0)[::-1, :]
-        null_distribution /= np.max(null_distribution, axis=0)
-
-        # Get the hist bins associated with each voxel's ale value, in order to
-        # get the p-value from the associated bin in the null distribution.
-        n_bins = len(self.null_distributions_["histogram_bins"])
-        ale_bins = round2(stat_values * step).astype(int)
-        ale_bins[ale_bins > n_bins] = n_bins
-
-        # Get p-values by getting the ale_bin-th value in null_distribution
-        # per voxel.
-        p_values = np.empty_like(ale_bins).astype(float)
-        for i, (x, y) in enumerate(zip(null_distribution.transpose(), ale_bins)):
-            p_values[i] = x[y]
-
-        z_values = p_to_z(p_values, tail="one")
-        return p_values, z_values
-
-    def _make_hist(self, oned_arr):
-        """Make a histogram from a 1d array and histogram bins.
-
-        Meant to be applied along an axis to a 2d array.
-        """
-        hist_ = np.histogram(
-            a=oned_arr,
+        scale_hists = np.apply_along_axis(
+            just_histogram,
+            0,
+            self.null_distributions_["empirical_null"],
             bins=self.null_distributions_["histogram_bins"],
             range=(
                 np.min(self.null_distributions_["histogram_bins"]),
                 np.max(self.null_distributions_["histogram_bins"]),
             ),
-            density=False,
-        )[0]
-        return hist_
+            density=False
+        )
+
+        if self.low_memory:
+            del self.null_distributions_["empirical_null"]
+            os.remove(self.null_distributions_["filename"])
+
+        # Convert voxel-wise histograms to voxel-wise null distributions.
+        null_distribution = np.cumsum(scale_hists[::-1, :], axis=0)[::-1, :]
+        null_distribution /= np.max(null_distribution, axis=0)
+
+        # Get p-values by getting the ale_bin-th value in null_distribution per voxel.
+        p_values = np.ones(stat_values.shape)
+        idx = np.where(stat_values > 0)[0]
+        stat_bins = round2(stat_values[idx] * inv_step_size)
+        p_values[idx] = null_distribution[stat_bins, idx]
+        z_values = p_to_z(p_values, tail="one")
+        return p_values, z_values
 
     def _run_permutation(self, params):
         """Run a single random SCALE permutation of a dataset."""
         iter_df, iter_ijk = params
         iter_ijk = np.squeeze(iter_ijk)
         iter_df[["i", "j", "k"]] = iter_ijk
-        stat_values = self._compute_summarystat(iter_df)
+        stat_values = self.compute_summarystat(iter_df)
         return stat_values
