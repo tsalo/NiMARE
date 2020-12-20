@@ -93,7 +93,6 @@ def meta_est(request):
         pytest.param(kernel.ALEKernel, id="ale_kernel"),
         pytest.param(kernel.MKDAKernel, id="mkda_kernel"),
         pytest.param(kernel.KDAKernel, id="kda_kernel"),
-        pytest.param(kernel.Peaks2MapsKernel, id="p2m_kernel"),
     ],
 )
 def kern(request):
@@ -162,19 +161,7 @@ def meta_res(simulatedata_cbma, meta, random):
     _, (_, dataset) = simulatedata_cbma
     # CHECK IF META/KERNEL WORK TOGETHER
     ####################################
-    # peaks2MapsKernel does not work with any meta-analysis estimator
-    if isinstance(meta.kernel_transformer, kernel.Peaks2MapsKernel):
-        # AttributeError: 'DataFrame' object has no attribute 'masker'
-        meta_expectation = pytest.raises(AttributeError)
-    elif (
-        isinstance(meta, ale.ALE)
-        and isinstance(meta.kernel_transformer, kernel.KDAKernel)
-        and meta.get_params().get("null_method") == "analytic"
-        and not isinstance(meta.kernel_transformer, kernel.MKDAKernel)
-    ):
-        meta_expectation = pytest.raises(IndexError)
-    else:
-        meta_expectation = does_not_raise()
+    meta_expectation = does_not_raise()
 
     with meta_expectation:
         res = meta.fit(dataset)
@@ -234,6 +221,12 @@ def test_meta_fit_performance(meta_res, signal_masks, simulatedata_cbma):
     ):
         good_performance = False
     elif (
+        isinstance(meta_res.estimator, ale.ALE)
+        and isinstance(meta_res.estimator.kernel_transformer, kernel.KDAKernel)
+        and meta_res.estimator.get_params().get("null_method") == "analytic"
+    ):
+        good_performance = False
+    elif (
         isinstance(meta_res.estimator, mkda.MKDADensity)
         and isinstance(meta_res.estimator.kernel_transformer, kernel.ALEKernel)
         and meta_res.estimator.get_params().get("null_method") == "analytic"
@@ -284,6 +277,12 @@ def test_corr_transform_performance(meta_cres, corr, signal_masks, simulatedata_
         isinstance(meta_cres.estimator, ale.ALE)
         and isinstance(meta_cres.estimator.kernel_transformer, kernel.KDAKernel)
         and meta_cres.estimator.get_params().get("null_method") == "empirical"
+    ):
+        good_performance = False
+    elif (
+        isinstance(meta_cres.estimator, ale.ALE)
+        and isinstance(meta_cres.estimator.kernel_transformer, kernel.KDAKernel)
+        and meta_cres.estimator.get_params().get("null_method") == "analytic"
     ):
         good_performance = False
     elif (
@@ -404,27 +403,10 @@ def _transform_res(meta, meta_res, corr):
     #######################################
     # all combinations of meta-analysis estimators and multiple comparison correctors
     # that do not work together
-    if isinstance(meta, mkda.KDA) and corr.method == "montecarlo":
-        # TypeError: correct_fwe_montecarlo() got an unexpected keyword argument 'voxel_thresh'
-        voxel_thresh = corr.parameters.pop("voxel_thresh")
-        corr_expectation = does_not_raise()
-    elif (
-        isinstance(meta, ale.ALE)
-        and isinstance(meta.kernel_transformer, kernel.KDAKernel)
-        and not isinstance(meta.kernel_transformer, kernel.MKDAKernel)
-        and corr.method == "montecarlo"
-        and meta.get_params().get("null_method") == "analytic"
-    ):
-        # IndexError: index 20000 is out of bounds for axis 0 with size 10010
-        corr_expectation = pytest.raises(IndexError)
-    else:
-        corr_expectation = does_not_raise()
+    corr_expectation = does_not_raise()
 
     with corr_expectation:
         cres = corr.transform(meta_res)
-
-    if corr.method == "montecarlo" and not corr.parameters.get("voxel_thresh"):
-        corr.parameters["voxel_thresh"] = voxel_thresh
 
     # if multiple correction failed (expected) do not continue
     if isinstance(corr_expectation, type(pytest.raises(ValueError))):
