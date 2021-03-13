@@ -1,5 +1,4 @@
 """CBMA methods from the activation likelihood estimation (ALE) family."""
-import os
 import logging
 import multiprocessing as mp
 
