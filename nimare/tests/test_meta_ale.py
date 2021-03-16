@@ -136,6 +136,12 @@ def test_ALE_analytic_null_unit(testdata_cbma, tmp_path_factory):
     )
     assert isinstance(cres.get_map("z_corr-FDR_method-indep", return_type="array"), np.ndarray)
 
+    # Fitting to a MetaResult without a p-value map
+    _ = meta.results.maps.pop("p")
+    corr = FDRCorrector(method="indep", alpha=0.05)
+    with pytest.raises(ValueError):
+        cres = corr.transform(meta.results)
+
 
 def test_ALE_empirical_null_unit(testdata_cbma, tmp_path_factory):
     """Unit test for ALE with an empirical null_method.
@@ -228,6 +234,33 @@ def test_ALESubtraction_smoke(testdata_cbma, tmp_path_factory):
 
     sub_meta.save(out_file)
     assert os.path.isfile(out_file)
+
+    # Test MCC approaches
+    # Bonferroni FWE
+    corr = FWECorrector(method="bonferroni")
+    cres = corr.transform(sub_meta.results)
+    assert isinstance(cres, nimare.results.MetaResult)
+    assert isinstance(
+        cres.get_map("p_desc-group1MinusGroup2_corr-FWE_method-bonferroni", return_type="image"),
+        nib.Nifti1Image,
+    )
+    assert isinstance(
+        cres.get_map("z_desc-group1MinusGroup2_corr-FWE_method-bonferroni", return_type="array"),
+        np.ndarray,
+    )
+
+    # FDR
+    corr = FDRCorrector(method="indep", alpha=0.05)
+    cres = corr.transform(sub_meta.results)
+    assert isinstance(cres, nimare.results.MetaResult)
+    assert isinstance(
+        cres.get_map("z_desc-group1MinusGroup2_corr-FDR_method-indep", return_type="image"),
+        nib.Nifti1Image,
+    )
+    assert isinstance(
+        cres.get_map("z_desc-group1MinusGroup2_corr-FDR_method-indep", return_type="array"),
+        np.ndarray,
+    )
 
 
 def test_ALESubtraction_smoke_lowmem(testdata_cbma, tmp_path_factory):

@@ -58,19 +58,24 @@ class Corrector(metaclass=ABCMeta):
 
         # Check required maps
         for rm in self._required_maps:
-            if result.maps.get(rm) is None:
+            if not self._select_maps(result.maps, rm):
                 raise ValueError(
-                    '{0} requires "{1}" maps to be present in the MetaResult, '
+                    "{0} requires '{1}' maps to be present in the MetaResult, "
                     "but none were found.".format(type(self), rm)
                 )
 
     def _generate_secondary_maps(self, result, corr_maps):
         # Generates corrected version of z and log-p maps if they exist
-        p = corr_maps["p"]
-        if "z" in result.maps:
-            corr_maps["z"] = p_to_z(p) * np.sign(result.maps["z"])
-        if "log_p" in result.maps:
-            corr_maps["logp"] = -np.log10(p)
+        p_maps = self._select_maps(corr_maps, "p")
+        for p_map_name in p_maps:
+            p = corr_maps[p_map_name]
+
+            if "z" in result.maps:
+                corr_maps["z"] = p_to_z(p) * np.sign(result.maps["z"])
+
+            if "logp" in result.maps:
+                corr_maps["logp"] = -np.log10(p)
+
         return corr_maps
 
     def transform(self, result):
@@ -111,6 +116,19 @@ class Corrector(metaclass=ABCMeta):
         corr_maps = {(k + self._name_suffix): v for k, v in corr_maps.items()}
         result.maps.update(corr_maps)
         return result
+
+    def _select_maps(self, dict_, map_type):
+        """Select uncorrected p-value maps from a MetaResult object."""
+        map_names = dict_.keys()
+        map_names = [
+            mn for mn in map_names if ((map_type in mn.split("_")) and ("corr-" not in mn))
+        ]
+        p_maps = map_names
+        if not p_maps:
+            raise ValueError(
+                f"No {map_type} maps detected. Available maps: {', '.join(dict_)}"
+            )
+        return p_maps
 
     @abstractmethod
     def _transform(self, result, **kwargs):
@@ -154,9 +172,17 @@ class FWECorrector(Corrector):
         return "_corr-FWE_method-{}".format(self.method)
 
     def _transform(self, result):
-        p = result.maps["p"]
-        _, p_corr, _, _ = mc.multipletests(p, method=self.method, is_sorted=False)
-        corr_maps = {"p": p_corr}
+        p_maps = self._select_maps(result.maps, "p")
+
+        for p_map_name in p_maps:
+            p = result.maps[p_map_name]
+            _, p_corr, _, _ = mc.multipletests(
+                p,
+                method=self.method,
+                is_sorted=False,
+            )
+            corr_maps = {p_map_name: p_corr}
+
         self._generate_secondary_maps(result, corr_maps)
         return corr_maps
 
@@ -196,8 +222,18 @@ class FDRCorrector(Corrector):
         return "_corr-FDR_method-{}".format(self.method)
 
     def _transform(self, result):
-        p = result.maps["p"]
-        _, p_corr = mc.fdrcorrection(p, alpha=self.alpha, method=self.method, is_sorted=False)
-        corr_maps = {"p": p_corr}
+        p_maps = self._select_maps(result.maps, "p")
+
+        for p_map_name in p_maps:
+            p = result.maps[p_map_name]
+            fdr_res = mc.fdrcorrection(
+                p,
+                alpha=self.alpha,
+                method=self.method,
+                is_sorted=False,
+            )
+            p_corr = fdr_res[1]
+            corr_maps = {p_map_name: p_corr}
+
         self._generate_secondary_maps(result, corr_maps)
         return corr_maps
