@@ -5,6 +5,7 @@ import os.path as op
 import pandas as pd
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 
+from ..base import Transformer
 from ..utils import get_resource_path
 
 LGR = logging.getLogger(__name__)
@@ -64,3 +65,9 @@ def generate_counts(text_df, text_column="abstract", tfidf=True, min_df=50, max_
     weights_df = pd.DataFrame(weights, columns=names, index=ids)
     weights_df.index.name = "id"
     return weights_df
+
+
+class VocabularyAnnotator(Transformer):
+    """A Transformer that creates annotations from text based on a vocabulary."""
+
+    ...

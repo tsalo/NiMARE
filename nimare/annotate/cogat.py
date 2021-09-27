@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from .. import references
+from ..base import Transformer
 from ..due import due
 from ..extract import download_cognitive_atlas
 from ..utils import uk_to_us
@@ -15,23 +16,28 @@ LGR = logging.getLogger(__name__)
 
 
 @due.dcite(references.COGNITIVE_ATLAS, description="Introduces the Cognitive Atlas.")
-class CogAtLemmatizer(object):
-    """Replace synonyms and abbreviations with Cognitive Atlas identifiers in text.
+class CogAtLemmatizer(Transformer):
+    """A Transformer that replaces synonyms with Cognitive Atlas identifiers in text.
 
     Parameters
     ----------
-    ontology_df : :obj:`pandas.DataFrame`, optional
+    text_column
+    new_column
+    ontology_df : :obj:`pandas.DataFrame` or None, optional
         DataFrame with three columns (id, name, alias) and one row for each
         alias (e.g., synonym or abbreviation) for each term in the Cognitive
-        Atlas. If None, loads ontology file from resources folder.
+        Atlas.
+        If None, loads ontology file from resources folder.
+    convert_uk : :obj:`bool`, optional
+        Convert British English words in text to American English versions.
+        Default is True.
 
     Attributes
     ----------
     ontology_ : :obj:`pandas.DataFrame`
         Ontology in DataFrame form.
     regex_ : :obj:`dict`
-        Dictionary linking aliases in ontology to regular expressions for
-        lemmatization.
+        Dictionary linking aliases in ontology to regular expressions for lemmatization.
 
     References
     ----------
@@ -40,13 +46,22 @@ class CogAtLemmatizer(object):
       neuroinformatics 5 (2011): 17. https://doi.org/10.3389/fninf.2011.00017
     """
 
-    def __init__(self, ontology_df=None):
+    def __init__(
+        self,
+        text_column="abstract",
+        new_column="abstract_cogat",
+        ontology_df=None,
+        convert_uk=True,
+    ):
+        self.text_column = text_column
+        self.convert_uk = convert_uk
         if ontology_df is None:
             cogat = download_cognitive_atlas()
             self.ontology_ = pd.read_csv(cogat["ids"])
         else:
             assert isinstance(ontology_df, pd.DataFrame)
             self.ontology_ = ontology_df
+
         assert "id" in self.ontology_.columns
         assert "name" in self.ontology_.columns
         assert "alias" in self.ontology_.columns
@@ -60,31 +75,43 @@ class CogAtLemmatizer(object):
             regex_dict[term] = pattern
         self.regex_ = regex_dict
 
-    def transform(self, text, convert_uk=True):
+    def transform(self, dataset):
         """Replace terms in text with unique Cognitive Atlas identifiers.
 
         Parameters
         ----------
-        text : :obj:`str`
-            Text to convert.
-        convert_uk : :obj:`bool`, optional
-            Convert British English words in text to American English versions.
-            Default is True.
+        dataset : :obj:`nimare.dataset.Dataset`
+            Dataset with some text in the column of its texts attribute named after the
+            ``text_column`` parameter.
 
         Returns
         -------
-        text : :obj:`str`
-            Text with Cognitive Atlas terms replaced with unique Cognitive
-            Atlas identifiers.
+        dataset : :obj:`nimare.dataset.Dataset`
+            Updated Dataset with new column in its texts attribute, named after the ``new_column``
+            parameter.
         """
-        if convert_uk:
-            text = uk_to_us(text)
+        assert hasattr(dataset, "texts")
+        assert self.text_column in dataset.texts.columns
+        assert self.new_column not in dataset.texts.columns
+        df = dataset.texts.copy()
+
+        df[self.new_column] = df[self.column]
+
+        if self.convert_uk:
+            df[self.new_column] = df[self.new_column].apply(uk_to_us)
 
         for term_idx in self.ontology_.index:
             term = self.ontology_["alias"].loc[term_idx]
             term_id = self.ontology_["id"].loc[term_idx]
-            text = re.sub(self.regex_[term], term_id, text)
-        return text
+            df[self.new_column] = df[self.new_column].str.replace(
+                to_replace=self.regex_[term],
+                value=term_id,
+                regex=True,
+            )
+
+        dataset = dataset.copy()
+        dataset.texts = df
+        return dataset
 
 
 @due.dcite(references.COGNITIVE_ATLAS, description="Introduces the Cognitive Atlas.")
@@ -147,6 +174,12 @@ def extract_cogat(text_df, id_df=None, text_column="abstract"):
         text_df[text_column] = text_df[text_column].str.replace(pattern, term_id)
 
     return counts_df, text_df
+
+
+class HierarchicalExpander(Transformer):
+    """A Transformer that uses relationships and a weighting schema to expand term counts."""
+
+    ...
 
 
 def expand_counts(counts_df, rel_df=None, weights=None):
