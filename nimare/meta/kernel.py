@@ -23,6 +23,7 @@ from nimare.meta.utils import (
     compute_ale_ma,
     compute_kda_ma,
     compute_p2m_ma,
+    get_ale_fwhm,
     get_ale_kernel,
 )
 from nimare.utils import (
@@ -336,13 +337,16 @@ class ALEKernel(KernelTransformer):
     def __init__(self, fwhm=None, sample_size=None, memory_limit=None):
         if fwhm is not None and sample_size is not None:
             raise ValueError('Only one of "fwhm" and "sample_size" may be provided.')
+
         self.fwhm = fwhm
         self.sample_size = sample_size
         self.memory_limit = memory_limit
+        self._function = compute_ale_ma
 
     def _transform(self, mask, coordinates):
         kernels = {}  # retain kernels in dictionary to speed things up
         exp_ids = coordinates["id"].unique()
+        vox_dims = mask.header.get_zooms()
 
         if self.memory_limit:
             # Use a memmapped 4D array
@@ -357,33 +361,32 @@ class ALEKernel(KernelTransformer):
             # Use a list of tuples
             transformed = []
 
+        if self.sample_size is not None:
+            # Use provided sample size
+            assert np.isfinite(self.sample_size), "Sample size must be finite number"
+            fwhm = get_ale_fwhm(self.sample_size)
+
         for i_exp, id_ in enumerate(exp_ids):
             data = coordinates.loc[coordinates["id"] == id_]
-
             ijk = np.vstack((data.i.values, data.j.values, data.k.values)).T.astype(int)
-            if self.sample_size is not None:
-                sample_size = self.sample_size
-            elif self.fwhm is None:
-                # Extract from input
-                sample_size = data.sample_size.astype(float).values[0]
 
             if self.fwhm is not None:
+                # Use provided FWHM
                 assert np.isfinite(self.fwhm), "FWHM must be finite number"
-                if self.fwhm not in kernels.keys():
-                    _, kern = get_ale_kernel(mask, fwhm=self.fwhm)
-                    kernels[self.fwhm] = kern
-                else:
-                    kern = kernels[self.fwhm]
+                fwhm = self.fwhm
 
-            else:
+            elif self.sample_size is None:
+                # Extract from input
+                sample_size = data.sample_size.astype(float).values[0]
                 assert np.isfinite(sample_size), "Sample size must be finite number"
-                if sample_size not in kernels.keys():
-                    _, kern = get_ale_kernel(mask, sample_size=sample_size)
-                    kernels[sample_size] = kern
-                else:
-                    kern = kernels[sample_size]
+                fwhm = get_ale_fwhm(sample_size)
 
-            kernel_data = compute_ale_ma(mask.shape, ijk, kern)
+            # Add kernel to dictionary
+            if fwhm not in kernels.keys():
+                kernels[fwhm] = get_ale_kernel(vox_dims=vox_dims, fwhm=fwhm)
+
+            # Get the MA map
+            kernel_data = self._function(shape=mask.shape, ijk=ijk, kernel=kernels[fwhm])
 
             if self.memory_limit:
                 transformed[i_exp, :, :, :] = kernel_data
@@ -421,24 +424,23 @@ class KDAKernel(KernelTransformer):
 
     _sum_overlap = True
 
-    def __init__(self, r=10, value=1, memory_limit=None):
+    def __init__(self, r=10, value=1):
         self.r = float(r)
         self.value = value
-        self.memory_limit = memory_limit
+        self._function = compute_kda_ma
 
     def _transform(self, mask, coordinates):
-        dims = mask.shape
         vox_dims = mask.header.get_zooms()
 
         ijks = coordinates[["i", "j", "k"]].values
         exp_idx = coordinates["id"].values
-        transformed = compute_kda_ma(
-            dims,
-            vox_dims,
-            ijks,
-            self.r,
-            self.value,
-            exp_idx,
+        transformed = self._function(
+            shape=mask.shape,
+            vox_dims=vox_dims,
+            ijk=ijks,
+            r=self.r,
+            value=self.value,
+            exp_idx=exp_idx,
             sum_overlap=self._sum_overlap,
             memory_limit=self.memory_limit,
             memmap_filename=self.memmap_filenames[0],

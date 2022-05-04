@@ -276,9 +276,10 @@ def compute_p2m_ma(
 
 
 def compute_kda_ma(
+    *,
     shape,
     vox_dims,
-    ijks,
+    ijk,
     r,
     value=1.0,
     exp_idx=None,
@@ -298,23 +299,22 @@ def compute_kda_ma(
 
     Parameters
     ----------
-    shape : :obj:`tuple`
+    shape : :obj:`tuple` of length 3
         Shape of brain image + buffer. Typically (91, 109, 91).
-    vox_dims : array_like
+    vox_dims : :obj:`numpy.ndarray` of shape (3,)
         Size (in mm) of each dimension of a voxel.
-    ijks : array-like
-        Indices of foci. Each row is a coordinate, with the three columns
-        corresponding to index in each of three dimensions.
+    ijk : :obj:`numpy.ndarray` of shape (X, 3)
+        Indices of foci. Each row is a coordinate, with the three columns corresponding to index in
+        each of three dimensions.
     r : :obj:`int`
         Sphere radius, in mm.
-    value : :obj:`int`
-        Value for sphere.
-    exp_idx : array_like
-        Optional indices of experiments. If passed, must be of same length as
-        ijks. Each unique value identifies all coordinates in ijk that come from
-        the same experiment. If None passed, it is assumed that all coordinates
-        come from the same experiment.
-    sum_overlap : :obj:`bool`
+    value : :obj:`float`, optional
+        Value for sphere. Default is 1.
+    exp_idx : :obj:`numpy.ndarray` of shape (X,), optional
+        Optional indices of experiments. If passed, must be of same length as ijk.
+        Each unique value identifies all coordinates in ijk that come from the same experiment.
+        If None passed, it is assumed that all coordinates come from the same experiment.
+    sum_overlap : :obj:`bool`, optional
         Whether to sum voxel values in overlapping spheres.
     memory_limit : :obj:`str` or None, optional
         Memory limit to apply to data. If None, no memory management will be applied.
@@ -323,18 +323,19 @@ def compute_kda_ma(
         Default is None.
     memmap_filename : :obj:`str`, optional
         If passed, use this file for memory mapping arrays
+        This is False by default, for MKDA kernels.
 
     Returns
     -------
-    kernel_data : :obj:`numpy.array`
-        3d or 4d array. If `exp_idx` is none, a 3d array in the same shape as
-        the `shape` argument is returned. If `exp_idx` is passed, a 4d array
-        is returned, where the first dimension has size equal to the number of
-        unique experiments, and the remaining 3 dimensions are equal to `shape`.
+    ma_values : :obj:`numpy.array`
+        3d or 4d array.
+        If ``exp_idx`` is none, a 3d array in the same shape as the ``shape`` argument is returned.
+        If ``exp_idx`` is passed, a 4d array is returned, where the first dimension has size equal
+        to the number of unique experiments, and the remaining 3 dimensions are equal to ``shape``.
     """
     squeeze = exp_idx is None
     if exp_idx is None:
-        exp_idx = np.ones(len(ijks))
+        exp_idx = np.ones(len(ijk))
 
     uniq, exp_idx = np.unique(exp_idx, return_inverse=True)
     n_studies = len(uniq)
@@ -346,7 +347,7 @@ def compute_kda_ma(
     else:
         kernel_data = np.zeros(kernel_shape, dtype=type(value))
 
-    n_dim = ijks.shape[1]
+    n_dim = ijk.shape[1]
     xx, yy, zz = [slice(-r // vox_dims[i], r // vox_dims[i] + 0.01, 1) for i in range(n_dim)]
     cube = np.vstack([row.ravel() for row in np.mgrid[xx, yy, zz]])
     kernel = cube[:, np.sum(np.dot(np.diag(vox_dims), cube) ** 2, 0) ** 0.5 <= r]
@@ -354,27 +355,26 @@ def compute_kda_ma(
     if memory_limit:
         chunk_size = _determine_chunk_size(limit=memory_limit, arr=ijks[0])
 
-    for i, peak in enumerate(ijks):
+    for i, peak in enumerate(ijk):
         sphere = np.round(kernel.T + peak)
         idx = (np.min(sphere, 1) >= 0) & (np.max(np.subtract(sphere, shape), 1) <= -1)
         sphere = sphere[idx, :].astype(int)
         exp = exp_idx[i]
         if sum_overlap:
-            kernel_data[exp][tuple(sphere.T)] += value
+            ma_values[exp][tuple(sphere.T)] += value
         else:
-            kernel_data[exp][tuple(sphere.T)] = value
-
         if memmap_filename and i % chunk_size == 0:
             # Write changes to disk
             kernel_data.flush()
+            ma_values[exp][tuple(sphere.T)] = value
 
     if squeeze:
-        kernel_data = np.squeeze(kernel_data, axis=0)
+        ma_values = np.squeeze(ma_values, axis=0)
 
-    return kernel_data
+    return ma_values
 
 
-def compute_ale_ma(shape, ijk, kernel):
+def compute_ale_ma(*, shape, ijk, kernel):
     """Generate ALE modeled activation (MA) maps.
 
     Replaces the values around each focus in ijk with the contrast-specific
@@ -384,18 +384,18 @@ def compute_ale_ma(shape, ijk, kernel):
 
     Parameters
     ----------
-    shape : tuple
+    shape : tuple of length 3
         Shape of brain image + buffer. Typically (91, 109, 91) + (30, 30, 30).
-    ijk : array-like
+    ijk : :obj:`numpy.ndarray` of shape (X, 3)
         Indices of foci. Each row is a coordinate, with the three columns
         corresponding to index in each of three dimensions.
-    kernel : array-like
+    kernel : 3D :obj:`numpy.ndarray`
         3D array of smoothing kernel. Typically of shape (30, 30, 30).
 
     Returns
     -------
-    ma_values : array-like
-        1d array of modeled activation values.
+    ma_values : :obj:`numpy.ndarray` of shape ``shape``
+        3D array of modeled activation values.
     """
     ma_values = np.zeros(shape)
     mid = int(np.floor(kernel.shape[0] / 2.0))
@@ -435,27 +435,35 @@ def compute_ale_ma(shape, ijk, kernel):
     return ma_values
 
 
-@due.dcite(references.ALE_KERNEL, description="Introduces sample size-dependent kernels to ALE.")
-def get_ale_kernel(img, sample_size=None, fwhm=None):
-    """Estimate 3D Gaussian and sigma (in voxels) for ALE kernel given sample size or fwhm."""
-    if sample_size is not None and fwhm is not None:
-        raise ValueError('Only one of "sample_size" and "fwhm" may be specified')
-    elif sample_size is None and fwhm is None:
-        raise ValueError('Either "sample_size" or "fwhm" must be provided')
-    elif sample_size is not None:
-        uncertain_templates = (
-            5.7 / (2.0 * np.sqrt(2.0 / np.pi)) * np.sqrt(8.0 * np.log(2.0))
-        )  # pylint: disable=no-member
-        # Assuming 11.6 mm ED between matching points
-        uncertain_subjects = (11.6 / (2 * np.sqrt(2 / np.pi)) * np.sqrt(8 * np.log(2))) / np.sqrt(
-            sample_size
-        )  # pylint: disable=no-member
-        fwhm = np.sqrt(uncertain_subjects**2 + uncertain_templates**2)
-
-    fwhm_vox = fwhm / np.sqrt(np.prod(img.header.get_zooms()))
-    sigma_vox = (
-        fwhm_vox * np.sqrt(2.0) / (np.sqrt(2.0 * np.log(2.0)) * 2.0)
+def get_ale_fwhm(sample_size):
+    uncertain_templates = (
+        5.7 / (2.0 * np.sqrt(2.0 / np.pi)) * np.sqrt(8.0 * np.log(2.0))
     )  # pylint: disable=no-member
+    # Assuming 11.6 mm ED between matching points
+    uncertain_subjects = (11.6 / (2 * np.sqrt(2 / np.pi)) * np.sqrt(8 * np.log(2))) / np.sqrt(
+        sample_size
+    )  # pylint: disable=no-member
+    fwhm = np.sqrt(uncertain_subjects**2 + uncertain_templates**2)
+    return fwhm
+
+
+@due.dcite(references.ALE_KERNEL, description="Introduces sample size-dependent kernels to ALE.")
+def get_ale_kernel(vox_dims, fwhm):
+    """Estimate 3D Gaussian and sigma (in voxels) for ALE kernel given sample size or fwhm.
+
+    Parameters
+    ----------
+    vox_dims : :obj:`numpy.ndarray` of shape (3,)
+        Size (in mm) of each dimension of a voxel.
+    fwhm : :obj:`float`
+        Full width at half max, in millimeters.
+
+    Returns
+    -------
+    kernel
+    """
+    fwhm_vox = fwhm / np.sqrt(np.prod(vox_dims))
+    sigma_vox = fwhm_vox * np.sqrt(2.0) / (np.sqrt(2.0 * np.log(2.0)) * 2.0)
 
     data = np.zeros((31, 31, 31))
     mid = int(np.floor(data.shape[0] / 2.0))
@@ -467,7 +475,7 @@ def get_ale_kernel(img, sample_size=None, fwhm=None):
     mx = np.max(np.where(kernel > np.spacing(1))[0])
     kernel = kernel[mn : mx + 1, mn : mx + 1, mn : mx + 1]
     mid = int(np.floor(data.shape[0] / 2.0))
-    return sigma_vox, kernel
+    return kernel
 
 
 def _get_last_bin(arr1d):
