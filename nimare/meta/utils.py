@@ -436,7 +436,26 @@ def compute_ale_ma(*, shape, ijk, kernel):
     return ma_values
 
 
+@due.dcite(references.ALE_KERNEL, description="Introduces sample size-dependent kernels to ALE.")
 def get_ale_fwhm(sample_size):
+    """Determine the appropriate ALE FWHM value for a given sample size.
+
+    This calculation is implemented as described in :footcite:t:`eickhoff2009coordinate`.
+
+    Parameters
+    ----------
+    sample_size : :obj:`float`
+        The sample size for which to determine the appropriate FWHM value.
+
+    Returns
+    -------
+    fwhm : :obj:`float`
+        The FWHM value associated with the sample size.
+
+    References
+    ----------
+    .. footbibliography::
+    """
     uncertain_templates = (
         5.7 / (2.0 * np.sqrt(2.0 / np.pi)) * np.sqrt(8.0 * np.log(2.0))
     )  # pylint: disable=no-member
@@ -448,7 +467,6 @@ def get_ale_fwhm(sample_size):
     return fwhm
 
 
-@due.dcite(references.ALE_KERNEL, description="Introduces sample size-dependent kernels to ALE.")
 def get_ale_kernel(vox_dims, fwhm):
     """Estimate 3D Gaussian and sigma (in voxels) for ALE kernel given sample size or fwhm.
 
