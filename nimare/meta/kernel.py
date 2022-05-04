@@ -431,13 +431,13 @@ class KDAKernel(KernelTransformer):
 
     def _transform(self, mask, coordinates):
         vox_dims = mask.header.get_zooms()
-
-        ijks = coordinates[["i", "j", "k"]].values
+        ijk = coordinates[["i", "j", "k"]].values
         exp_idx = coordinates["id"].values
+
         transformed = self._function(
             shape=mask.shape,
             vox_dims=vox_dims,
-            ijk=ijks,
+            ijk=ijk,
             r=self.r,
             value=self.value,
             exp_idx=exp_idx,
