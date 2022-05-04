@@ -316,6 +316,7 @@ def compute_kda_ma(
         If None passed, it is assumed that all coordinates come from the same experiment.
     sum_overlap : :obj:`bool`, optional
         Whether to sum voxel values in overlapping spheres.
+        This is False by default, for MKDA kernels.
     memory_limit : :obj:`str` or None, optional
         Memory limit to apply to data. If None, no memory management will be applied.
         Otherwise, the memory limit will be used to (1) assign memory-mapped files and
@@ -323,7 +324,6 @@ def compute_kda_ma(
         Default is None.
     memmap_filename : :obj:`str`, optional
         If passed, use this file for memory mapping arrays
-        This is False by default, for MKDA kernels.
 
     Returns
     -------
@@ -343,9 +343,9 @@ def compute_kda_ma(
     kernel_shape = (n_studies,) + shape
     if memmap_filename:
         # Use a memmapped 4D array
-        kernel_data = np.memmap(memmap_filename, dtype=type(value), mode="w+", shape=kernel_shape)
+        ma_values = np.memmap(memmap_filename, dtype=type(value), mode="w+", shape=kernel_shape)
     else:
-        kernel_data = np.zeros(kernel_shape, dtype=type(value))
+        ma_values = np.zeros(kernel_shape, dtype=type(value))
 
     n_dim = ijk.shape[1]
     xx, yy, zz = [slice(-r // vox_dims[i], r // vox_dims[i] + 0.01, 1) for i in range(n_dim)]
@@ -353,7 +353,7 @@ def compute_kda_ma(
     kernel = cube[:, np.sum(np.dot(np.diag(vox_dims), cube) ** 2, 0) ** 0.5 <= r]
 
     if memory_limit:
-        chunk_size = _determine_chunk_size(limit=memory_limit, arr=ijks[0])
+        chunk_size = _determine_chunk_size(limit=memory_limit, arr=ijk[0])
 
     for i, peak in enumerate(ijk):
         sphere = np.round(kernel.T + peak)
@@ -363,10 +363,11 @@ def compute_kda_ma(
         if sum_overlap:
             ma_values[exp][tuple(sphere.T)] += value
         else:
+            ma_values[exp][tuple(sphere.T)] = value
+
         if memmap_filename and i % chunk_size == 0:
             # Write changes to disk
-            kernel_data.flush()
-            ma_values[exp][tuple(sphere.T)] = value
+            ma_values.flush()
 
     if squeeze:
         ma_values = np.squeeze(ma_values, axis=0)
