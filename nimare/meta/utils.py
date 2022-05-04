@@ -456,13 +456,11 @@ def get_ale_fwhm(sample_size):
     ----------
     .. footbibliography::
     """
-    uncertain_templates = (
-        5.7 / (2.0 * np.sqrt(2.0 / np.pi)) * np.sqrt(8.0 * np.log(2.0))
-    )  # pylint: disable=no-member
+    uncertain_templates = 5.7 / (2.0 * np.sqrt(2.0 / np.pi)) * np.sqrt(8.0 * np.log(2.0))
     # Assuming 11.6 mm ED between matching points
     uncertain_subjects = (11.6 / (2 * np.sqrt(2 / np.pi)) * np.sqrt(8 * np.log(2))) / np.sqrt(
         sample_size
-    )  # pylint: disable=no-member
+    )
     fwhm = np.sqrt(uncertain_subjects**2 + uncertain_templates**2)
     return fwhm
 
