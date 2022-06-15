@@ -397,7 +397,48 @@ def compute_kda_ma(
     return kernel_data
 
 
-def compute_ale_ma(shape, ijk, kernel):
+def compute_ale_ma_sparse(shape, ijk, kernel_idx, kernel_values, mid):
+    """Compute ALE modeled activation (MA) map."""
+    shifted_locs = ijk.T[:, None, :] + kernel_idx[:, :, None] + mid
+    buffer = np.full(shape=(3,), fill_value=mid * 2)
+    temp_shape = np.array(shape)
+    shape_with_buffer = temp_shape + buffer
+
+    shifted_locs_1d = np.ravel_multi_index(shifted_locs, dims=shape_with_buffer, order="F")
+
+    ma_idx = shifted_locs_1d[:, 0]
+    ma_values = kernel_values.copy()
+
+    for i_peak in range(1, shifted_locs_1d.shape[1]):
+        peak_idx = shifted_locs_1d[:, i_peak]
+        peak_values = kernel_values.copy()
+        _, ma_int_idx, peak_int_idx = np.intersect1d(
+            ma_idx, peak_idx, assume_unique=True, return_indices=True
+        )
+        intersection_values = np.maximum(ma_values[ma_int_idx], peak_values[peak_int_idx])
+        ma_values[ma_int_idx] = intersection_values
+
+        del ma_int_idx
+
+        bool_idx = np.full(shape=peak_idx.shape, fill_value=True, dtype=bool)
+        bool_idx[peak_int_idx] = False
+        ma_values = np.concatenate((ma_values, peak_values[bool_idx]))
+        ma_idx = np.concatenate((ma_idx, peak_idx[bool_idx]))
+
+        del bool_idx, peak_idx, peak_values, peak_int_idx
+
+    ma_idx = np.vstack(np.unravel_index(ma_idx, dims=shape_with_buffer, order="F"))
+    ma_idx -= mid
+    bad_idx = np.any(ma_idx.T >= temp_shape, axis=1)
+    ma_idx = ma_idx[:, ~bad_idx]
+    ma_values = ma_values[~bad_idx]
+
+    ma = sparse.COO(ma_idx, ma_values, shape)
+
+    return ma
+
+
+def compute_ale_ma_dense(shape, ijk, kernel):
     """Generate ALE modeled activation (MA) maps.
 
     Replaces the values around each focus in ijk with the contrast-specific
@@ -412,8 +453,8 @@ def compute_ale_ma(shape, ijk, kernel):
     ijk : array-like
         Indices of foci. Each row is a coordinate, with the three columns
         corresponding to index in each of three dimensions.
-    kernel : array-like
-        3D array of smoothing kernel. Typically of shape (30, 30, 30).
+    kernel : :obj:`sparse._coo.core.COO`
+        3D sparse array of smoothing kernel.
 
     Returns
     -------
@@ -456,12 +497,7 @@ def compute_ale_ma(shape, ijk, kernel):
                 ma_values[xl:xh, yl:yh, zl:zh], kernel[xlk:xhk, ylk:yhk, zlk:zhk]
             )
 
-    # Convert dense array to sparse
-    nonzero_idx = np.vstack(np.where(ma_values))
-    nonzero_values = ma_values[nonzero_idx[0, :], nonzero_idx[1, :], nonzero_idx[2, :]]
-    kernel_data = sparse.COO(nonzero_idx, nonzero_values, shape=shape)
-
-    return kernel_data
+    return ma_values
 
 
 @due.dcite(references.ALE_KERNEL, description="Introduces sample size-dependent kernels to ALE.")
@@ -495,8 +531,11 @@ def get_ale_kernel(img, sample_size=None, fwhm=None):
     mn = np.min(np.where(kernel > np.spacing(1))[0])
     mx = np.max(np.where(kernel > np.spacing(1))[0])
     kernel = kernel[mn : mx + 1, mn : mx + 1, mn : mx + 1]
-    mid = int(np.floor(data.shape[0] / 2.0))
-    return sigma_vox, kernel
+
+    kernel_idx = np.vstack(np.where(kernel))
+    kernel_values = kernel[kernel_idx[0, :], kernel_idx[1, :], kernel_idx[2, :]]
+
+    return sigma_vox, kernel, kernel_idx, kernel_values, mid
 
 
 def _get_last_bin(arr1d):

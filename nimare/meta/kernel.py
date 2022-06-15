@@ -21,7 +21,8 @@ from nimare import references
 from nimare.base import NiMAREBase
 from nimare.due import due
 from nimare.meta.utils import (
-    compute_ale_ma,
+    compute_ale_ma_dense,
+    compute_ale_ma_sparse,
     compute_kda_ma,
     compute_p2m_ma,
     get_ale_kernel,
@@ -302,11 +303,12 @@ class ALEKernel(KernelTransformer):
     .. footbibliography::
     """
 
-    def __init__(self, fwhm=None, sample_size=None):
+    def __init__(self, fwhm=None, sample_size=None, sparse=True):
         if fwhm is not None and sample_size is not None:
             raise ValueError('Only one of "fwhm" and "sample_size" may be provided.')
         self.fwhm = fwhm
         self.sample_size = sample_size
+        self.sparse = sparse
 
     def _transform(self, mask, coordinates):
         kernels = {}  # retain kernels in dictionary to speed things up
@@ -326,20 +328,29 @@ class ALEKernel(KernelTransformer):
             if self.fwhm is not None:
                 assert np.isfinite(self.fwhm), "FWHM must be finite number"
                 if self.fwhm not in kernels.keys():
-                    _, kern = get_ale_kernel(mask, fwhm=self.fwhm)
-                    kernels[self.fwhm] = kern
+                    _, kernel, kernel_idx, kernel_values, mid = get_ale_kernel(
+                        mask, fwhm=self.fwhm
+                    )
+                    kernels[self.fwhm] = (kernel, kernel_idx, kernel_values, mid)
                 else:
-                    kern = kernels[self.fwhm]
+                    kernel, kernel_idx, kernel_values, mid = kernels[self.fwhm]
 
             else:
                 assert np.isfinite(sample_size), "Sample size must be finite number"
                 if sample_size not in kernels.keys():
-                    _, kern = get_ale_kernel(mask, sample_size=sample_size)
-                    kernels[sample_size] = kern
+                    _, kernel, kernel_idx, kernel_values, mid = get_ale_kernel(
+                        mask, sample_size=sample_size
+                    )
+                    kernels[sample_size] = (kernel, kernel_idx, kernel_values, mid)
                 else:
-                    kern = kernels[sample_size]
+                    kernel, kernel_idx, kernel_values, mid = kernels[sample_size]
 
-            kernel_data = compute_ale_ma(mask.shape, ijk, kern)
+            if self.sparse:
+                kernel_data = compute_ale_ma_sparse(
+                    mask.shape, ijk, kernel_idx, kernel_values, mid
+                )
+            else:
+                kernel_data = compute_ale_ma_dense(mask.shape, ijk, kernel)
 
             transformed.append(kernel_data)
 
