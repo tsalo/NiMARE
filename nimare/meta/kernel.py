@@ -311,32 +311,32 @@ class ALEKernel(KernelTransformer):
         self.sparse = sparse
 
     def _transform(self, mask, coordinates):
-        kernels = {}  # retain kernels in dictionary to speed things up
         exp_ids = coordinates["id"].unique()
+
+        use_dict = True
+
+        if self.sample_size is not None:
+            _, kern = get_ale_kernel(mask, sample_size=self.sample_size)
+            use_dict = False
+
+        if self.fwhm is not None:
+            assert np.isfinite(self.fwhm), "FWHM must be finite number"
+            _, kern = get_ale_kernel(mask, fwhm=self.fwhm)
+            use_dict = False
+
+        if use_dict:
+            kernels = {}  # retain kernels in dictionary to speed things up
 
         transformed = []
         for i_exp, id_ in enumerate(exp_ids):
             data = coordinates.loc[coordinates["id"] == id_]
 
             ijk = np.vstack((data.i.values, data.j.values, data.k.values)).T.astype(int)
-            if self.sample_size is not None:
-                sample_size = self.sample_size
-            elif self.fwhm is None:
+
+            if use_dict:
                 # Extract from input
                 sample_size = data.sample_size.astype(float).values[0]
 
-            if self.fwhm is not None:
-                assert np.isfinite(self.fwhm), "FWHM must be finite number"
-                if self.fwhm not in kernels.keys():
-                    _, kernel, kernel_idx, kernel_values, mid = get_ale_kernel(
-                        mask, fwhm=self.fwhm
-                    )
-                    kernels[self.fwhm] = (kernel, kernel_idx, kernel_values, mid)
-                else:
-                    kernel, kernel_idx, kernel_values, mid = kernels[self.fwhm]
-
-            else:
-                assert np.isfinite(sample_size), "Sample size must be finite number"
                 if sample_size not in kernels.keys():
                     _, kernel, kernel_idx, kernel_values, mid = get_ale_kernel(
                         mask, sample_size=sample_size
@@ -351,6 +351,11 @@ class ALEKernel(KernelTransformer):
                 )
             else:
                 kernel_data = compute_ale_ma_dense(mask.shape, ijk, kernel)
+
+            # Convert dense array to sparse
+            nonzero_idx = np.vstack(np.where(kernel_data))
+            nonzero_values = kernel_data[nonzero_idx[0, :], nonzero_idx[1, :], nonzero_idx[2, :]]
+            kernel_data = sparse.COO(nonzero_idx, nonzero_values, shape=mask.shape)
 
             transformed.append(kernel_data)
 

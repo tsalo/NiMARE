@@ -458,8 +458,8 @@ def compute_ale_ma_dense(shape, ijk, kernel):
 
     Returns
     -------
-    ma_values : :obj:`sparse._coo.core.COO`
-        3D sparse array containing MA values.
+    ma_values : array-like
+        3d array of modeled activation values.
     """
     ma_values = np.zeros(shape)
     mid = int(np.floor(kernel.shape[0] / 2.0))
