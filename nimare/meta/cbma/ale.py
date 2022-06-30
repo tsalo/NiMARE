@@ -216,9 +216,11 @@ class ALE(CBMAEstimator):
         bin_edges = np.append(bin_centers, bin_centers[-1] + step_size)
 
         n_mask_voxels = int(self.masker.mask_img.get_fdata().sum())
+        data = ma_values.data
+        coords = ma_values.coords
 
-        for i_exp in range(ma_values.shape[3]):
-            study_ma_values = ma_values[..., i_exp].data
+        for i_exp in range(max(coords[0, :])):
+            study_ma_values = data[coords[0, :] == i_exp]
             n_nonzero_voxels = study_ma_values.shape[0]
             n_zero_voxels = n_mask_voxels - n_nonzero_voxels
             ma_hist = np.histogram(study_ma_values, bins=bin_edges, density=False)[0].astype(float)
