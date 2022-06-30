@@ -208,10 +208,6 @@ class ALE(CBMAEstimator):
 
         assert "histogram_bins" in self.null_distributions_.keys()
 
-        def just_histogram(*args, **kwargs):
-            """Collect the first output (weights) from numpy histogram."""
-            return np.histogram(*args, **kwargs)[0].astype(float)
-
         # Derive bin edges from histogram bin centers for numpy histogram function
         bin_centers = self.null_distributions_["histogram_bins"]
         step_size = bin_centers[1] - bin_centers[0]
@@ -219,27 +215,31 @@ class ALE(CBMAEstimator):
         bin_edges = bin_centers - (step_size / 2)
         bin_edges = np.append(bin_centers, bin_centers[-1] + step_size)
 
-        ma_hists = np.apply_along_axis(just_histogram, 1, ma_values, bins=bin_edges, density=False)
+        n_mask_voxels = int(self.masker.mask_img.get_fdata().sum())
 
-        # Normalize MA histograms to get probabilities
-        ma_hists /= ma_hists.sum(1)[:, None]
+        for i_exp in range(ma_values.shape[3]):
+            study_ma_values = ma_values[..., i_exp].data
+            n_nonzero_voxels = study_ma_values.shape[0]
+            n_zero_voxels = n_mask_voxels - n_nonzero_voxels
+            ma_hist = np.histogram(study_ma_values, bins=bin_edges, density=False)[0].astype(float)
+            ma_hist[0] += n_zero_voxels
+            # Normalize MA histogram to get probabilities
+            ma_hist /= ma_hist.sum()
 
-        ale_hist = ma_hists[0, :].copy()
-
-        for i_exp in range(1, ma_hists.shape[0]):
-
-            exp_hist = ma_hists[i_exp, :]
+            if i_exp == 0:
+                ale_hist = ma_hist.copy()
+                continue
 
             # Find histogram bins with nonzero values for each histogram.
             ale_idx = np.where(ale_hist > 0)[0]
-            exp_idx = np.where(exp_hist > 0)[0]
+            exp_idx = np.where(ma_hist > 0)[0]
 
             # Compute output MA values, ale_hist indices, and probabilities
             ale_scores = (
                 1 - np.outer((1 - bin_centers[exp_idx]), (1 - bin_centers[ale_idx])).ravel()
             )
             score_idx = np.floor(ale_scores * inv_step_size).astype(int)
-            probabilities = np.outer(exp_hist[exp_idx], ale_hist[ale_idx]).ravel()
+            probabilities = np.outer(ma_hist[exp_idx], ale_hist[ale_idx]).ravel()
 
             # Reset histogram and set probabilities.
             # Use at() instead of setting values directly (ale_hist[score_idx] = probabilities)
