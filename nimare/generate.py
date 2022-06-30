@@ -5,7 +5,7 @@ import numpy as np
 
 from nimare.dataset import Dataset
 from nimare.io import convert_neurovault_to_dataset
-from nimare.meta.utils import compute_ale_ma, get_ale_kernel
+from nimare.meta.utils import compute_ale_ma_dense, get_ale_kernel
 from nimare.transforms import ImageTransformer
 from nimare.utils import get_template, mm2vox, vox2mm
 
@@ -266,7 +266,7 @@ def _create_foci(foci, foci_percentage, fwhm, n_studies, n_noise_foci, rng, spac
     # create a probability map for each peak
     kernel = get_ale_kernel(template_img, fwhm)[1]
     foci_prob_maps = {
-        tuple(peak): compute_ale_ma(template_data.shape, np.atleast_2d(peak), kernel)
+        tuple(peak): compute_ale_ma_dense(template_data.shape, np.atleast_2d(peak), kernel)
         for peak in ground_truth_foci_ijks
         if peak.size
     }
